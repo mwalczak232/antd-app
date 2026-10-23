@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { InputRef } from 'antd'
 import {
   Alert,
   AutoComplete,
@@ -14,6 +15,7 @@ import {
   Grid,
   Input,
   Layout,
+  Modal,
   Row,
   Segmented,
   Space,
@@ -29,11 +31,14 @@ import {
   CreditCardOutlined,
   CustomerServiceOutlined,
   DislikeOutlined,
+  EnterOutlined,
+  HistoryOutlined,
   LikeOutlined,
   MailOutlined,
   MedicineBoxOutlined,
   MoonOutlined,
   PhoneOutlined,
+  QuestionCircleOutlined,
   SearchOutlined,
   ShoppingOutlined,
   SunOutlined,
@@ -156,6 +161,299 @@ function Highlight({ text, query }: { text: string; query: string }) {
   )
 }
 
+type SearchItem =
+  | { kind: 'faq'; id: string; faq: Faq }
+  | { kind: 'topic'; id: string; category: (typeof CATEGORIES)[number] }
+  | { kind: 'contact'; id: string; team: Team }
+
+const RECENT_KEY = 'help-recent-searches'
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.userAgent)
+
+function loadRecent(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]')
+  } catch {
+    return []
+  }
+}
+
+function saveRecent(recent: string[]) {
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(recent))
+  } catch {
+    // Storage can be unavailable (private mode); recent searches are a nicety.
+  }
+}
+
+function contactText(team: Team) {
+  const c = CONTACTS[team]
+  return `${c.title} ${c.description} ${c.phone} ${c.email} contact call phone email speak talk number`.toLowerCase()
+}
+
+function snippet(text: string, q: string) {
+  const i = q ? text.toLowerCase().indexOf(q) : -1
+  if (i < 0) return text.length > 90 ? `${text.slice(0, 90)}…` : text
+  const start = Math.max(0, i - 30)
+  return `${start > 0 ? '…' : ''}${text.slice(start, start + 100)}${start + 100 < text.length ? '…' : ''}`
+}
+
+const faqItem = (faq: Faq): SearchItem => ({ kind: 'faq', id: `faq:${faq.key}`, faq })
+const topicItem = (category: (typeof CATEGORIES)[number]): SearchItem => ({ kind: 'topic', id: `topic:${category.value}`, category })
+const contactItem = (team: Team): SearchItem => ({ kind: 'contact', id: `contact:${team}`, team })
+
+function SearchPalette({
+  open,
+  onClose,
+  onSelect,
+}: {
+  open: boolean
+  onClose: () => void
+  onSelect: (item: SearchItem) => void
+}) {
+  const { token } = theme.useToken()
+  const screens = Grid.useBreakpoint()
+  const [query, setQuery] = useState('')
+  const [active, setActive] = useState(0)
+  const [recent, setRecent] = useState<string[]>(loadRecent)
+  const inputRef = useRef<InputRef>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+
+  const q = query.trim().toLowerCase()
+  const groups = useMemo(() => {
+    if (!q)
+      return [
+        { title: 'Popular questions', items: FAQS.slice(0, 3).map(faqItem) },
+        { title: 'Browse topics', items: CATEGORIES.map(topicItem) },
+      ]
+    return [
+      { title: 'Questions', items: FAQS.filter((f) => matches(f, q)).map(faqItem) },
+      {
+        title: 'Topics',
+        items: CATEGORIES.filter((c) => `${c.label} ${c.description}`.toLowerCase().includes(q)).map(topicItem),
+      },
+      { title: 'Contact', items: (['plan', 'shop'] as const).filter((t) => contactText(t).includes(q)).map(contactItem) },
+    ].filter((g) => g.items.length > 0)
+  }, [q])
+  const flat = groups.flatMap((g) => g.items)
+
+  useEffect(() => {
+    listRef.current?.querySelector(`[data-index="${active}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [active])
+
+  const updateQuery = (value: string) => {
+    setQuery(value)
+    setActive(0)
+  }
+
+  const close = () => {
+    onClose()
+    updateQuery('')
+  }
+
+  const choose = (item: SearchItem) => {
+    if (q) {
+      const next = [query.trim(), ...recent.filter((r) => r.toLowerCase() !== q)].slice(0, 5)
+      setRecent(next)
+      saveRecent(next)
+    }
+    onSelect(item)
+    close()
+  }
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (!flat.length) return
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setActive((a) => (a + 1) % flat.length)
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setActive((a) => (a - 1 + flat.length) % flat.length)
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      choose(flat[active])
+    }
+  }
+
+  const iconBox = (icon: React.ReactNode) => (
+    <Flex
+      align="center"
+      justify="center"
+      style={{
+        flex: 'none',
+        width: 36,
+        height: 36,
+        borderRadius: 10,
+        background: token.colorPrimaryBg,
+        color: token.colorPrimary,
+        fontSize: 16,
+      }}
+    >
+      {icon}
+    </Flex>
+  )
+
+  const renderItem = (item: SearchItem) => {
+    if (item.kind === 'faq')
+      return {
+        icon: <QuestionCircleOutlined />,
+        title: item.faq.question,
+        detail: `${CATEGORIES.find((c) => c.value === item.faq.category)!.label} · ${snippet(item.faq.answer, q)}`,
+      }
+    if (item.kind === 'topic')
+      return {
+        icon: item.category.icon,
+        title: item.category.label,
+        detail: `${item.category.description} · ${FAQS.filter((f) => f.category === item.category.value).length} questions`,
+      }
+    const c = CONTACTS[item.team]
+    return { icon: <PhoneOutlined />, title: c.title, detail: `${c.phone} · ${c.email}` }
+  }
+
+  let index = -1
+
+  return (
+    <Modal
+      open={open}
+      onCancel={close}
+      footer={null}
+      closable={false}
+      width={640}
+      style={{ top: 72, maxWidth: 'calc(100vw - 32px)' }}
+      styles={{ body: { padding: 0 } }}
+      afterOpenChange={(isOpen) => isOpen && inputRef.current?.focus()}
+      destroyOnHidden
+      aria-label="Search help"
+    >
+      <Input
+        ref={inputRef}
+        id="help-palette-search"
+        size="large"
+        variant="borderless"
+        allowClear
+        value={query}
+        onChange={(e) => updateQuery(e.target.value)}
+        onKeyDown={onKeyDown}
+        prefix={<SearchOutlined style={{ color: token.colorPrimary, fontSize: 18 }} />}
+        placeholder="Search questions, topics or contacts"
+        aria-label="Search help"
+        aria-controls="help-palette-results"
+        style={{ fontSize: 17, paddingBlock: 14 }}
+      />
+      <div style={{ borderTop: `1px solid ${token.colorBorderSecondary}` }} />
+
+      <div
+        ref={listRef}
+        id="help-palette-results"
+        role="listbox"
+        style={{ maxHeight: 'min(420px, 60vh)', overflowY: 'auto', padding: 8 }}
+      >
+        {!q && recent.length > 0 && (
+          <Flex vertical gap={8} style={{ padding: '8px 8px 12px' }}>
+            <Flex justify="space-between" align="center">
+              <Text type="secondary" style={{ fontSize: 12, fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}>
+                Recent searches
+              </Text>
+              <Button
+                type="link"
+                size="small"
+                onClick={() => {
+                  setRecent([])
+                  saveRecent([])
+                }}
+              >
+                Clear
+              </Button>
+            </Flex>
+            <Flex gap={8} wrap>
+              {recent.map((r) => (
+                <Button key={r} size="small" shape="round" icon={<HistoryOutlined />} onClick={() => updateQuery(r)}>
+                  {r}
+                </Button>
+              ))}
+            </Flex>
+          </Flex>
+        )}
+
+        {groups.map((group) => (
+          <div key={group.title} role="group" aria-label={group.title}>
+            <Text
+              type="secondary"
+              style={{ display: 'block', padding: '8px 8px 4px', fontSize: 12, fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}
+            >
+              {group.title}
+            </Text>
+            {group.items.map((item) => {
+              index += 1
+              const i = index
+              const isActive = i === active
+              const { icon, title, detail } = renderItem(item)
+              return (
+                <Flex
+                  key={item.id}
+                  data-index={i}
+                  role="option"
+                  aria-selected={isActive}
+                  align="center"
+                  gap={12}
+                  onMouseMove={() => setActive(i)}
+                  onClick={() => choose(item)}
+                  style={{
+                    padding: '10px 8px',
+                    borderRadius: token.borderRadius,
+                    cursor: 'pointer',
+                    background: isActive ? token.colorPrimaryBg : 'transparent',
+                  }}
+                >
+                  {iconBox(icon)}
+                  <Flex vertical style={{ minWidth: 0, flex: 1 }}>
+                    <Text strong ellipsis>
+                      <Highlight text={title} query={query} />
+                    </Text>
+                    <Text type="secondary" ellipsis style={{ fontSize: 13 }}>
+                      <Highlight text={detail} query={query} />
+                    </Text>
+                  </Flex>
+                  {isActive && <EnterOutlined style={{ color: token.colorPrimary }} />}
+                </Flex>
+              )
+            })}
+          </div>
+        ))}
+
+        {q && flat.length === 0 && (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={`No results for “${query.trim()}”`}
+            style={{ paddingBlock: 24 }}
+          >
+            <Button type="primary" shape="round" icon={<PhoneOutlined />} onClick={() => choose(contactItem('plan'))}>
+              Ask our team instead
+            </Button>
+          </Empty>
+        )}
+      </div>
+
+      {screens.sm && (
+        <Flex
+          gap={16}
+          style={{ padding: '10px 16px', borderTop: `1px solid ${token.colorBorderSecondary}`, color: token.colorTextTertiary, fontSize: 12 }}
+        >
+          <span>
+            <Text keyboard>↑</Text>
+            <Text keyboard>↓</Text> to move
+          </span>
+          <span>
+            <Text keyboard>Enter</Text> to open
+          </span>
+          <span>
+            <Text keyboard>Esc</Text> to close
+          </span>
+        </Flex>
+      )}
+    </Modal>
+  )
+}
+
 function FaqFeedback() {
   const { token } = theme.useToken()
   const [vote, setVote] = useState<'yes' | 'no' | null>(null)
@@ -240,7 +538,21 @@ function HelpContent({ dark, onToggleDark }: { dark: boolean; onToggleDark: (dar
   const [category, setCategory] = useState<Category | 'all'>('all')
   const [openKeys, setOpenKeys] = useState<string[]>([])
   const [topic, setTopic] = useState(TEAM_PICKER[0].value)
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const faqRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement
+      const typing = target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+      if (((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') || (e.key === '/' && !typing)) {
+        e.preventDefault()
+        setPaletteOpen(true)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   const q = query.trim().toLowerCase()
   const results = useMemo(
@@ -252,10 +564,27 @@ function HelpContent({ dark, onToggleDark }: { dark: boolean; onToggleDark: (dar
     [],
   )
   const suggestions = q
-    ? FAQS.filter((faq) => matches(faq, q)).map((faq) => ({
-        value: faq.key,
-        label: <Highlight text={faq.question} query={query} />,
-      }))
+    ? [
+        {
+          label: 'Questions',
+          options: FAQS.filter((faq) => matches(faq, q)).map((faq) => ({
+            value: `faq:${faq.key}`,
+            label: <Highlight text={faq.question} query={query} />,
+          })),
+        },
+        {
+          label: 'Topics',
+          options: CATEGORIES.filter((c) => `${c.label} ${c.description}`.toLowerCase().includes(q)).map((c) => ({
+            value: `topic:${c.value}`,
+            label: (
+              <Space>
+                {c.icon}
+                <Highlight text={c.label} query={query} />
+              </Space>
+            ),
+          })),
+        },
+      ].filter((group) => group.options.length > 0)
     : []
   const recommendedTeam = TEAM_PICKER.find((t) => t.value === topic)!.team
 
@@ -273,6 +602,23 @@ function HelpContent({ dark, onToggleDark }: { dark: boolean; onToggleDark: (dar
     setQuery('')
     setOpenKeys([])
     scrollToFaqs()
+  }
+
+  const showTeam = (team: Team) => {
+    setTopic(TEAM_PICKER.find((t) => t.team === team)!.value)
+    document.getElementById('contact')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  const onPaletteSelect = (item: SearchItem) => {
+    if (item.kind === 'faq') openFaq(item.faq.key)
+    else if (item.kind === 'topic') pickCategory(item.category.value)
+    else showTeam(item.team)
+  }
+
+  const onHeroSelect = (value: string) => {
+    const [kind, key] = value.split(':')
+    if (kind === 'faq') openFaq(key)
+    else pickCategory(key as Category)
   }
 
   const section: React.CSSProperties = { maxWidth: 1040, margin: '0 auto', paddingInline: 16 }
@@ -305,7 +651,24 @@ function HelpContent({ dark, onToggleDark }: { dark: boolean; onToggleDark: (dar
             Pet Health Club
           </Text>
         </Flex>
+        {screens.sm ? (
+          <Button
+            shape="round"
+            onClick={() => setPaletteOpen(true)}
+            aria-label="Search help"
+            style={{ flex: 1, maxWidth: 420, justifyContent: 'space-between', color: token.colorTextTertiary, background: token.colorFillTertiary, borderColor: 'transparent' }}
+          >
+            <Space>
+              <SearchOutlined />
+              Search help
+            </Space>
+            <Text keyboard type="secondary">
+              {IS_MAC ? '⌘ K' : 'Ctrl K'}
+            </Text>
+          </Button>
+        ) : null}
         <Flex align="center" gap={12}>
+          {!screens.sm && <Button shape="circle" icon={<SearchOutlined />} onClick={() => setPaletteOpen(true)} aria-label="Search help" />}
           <Switch
             checked={dark}
             onChange={onToggleDark}
@@ -347,7 +710,7 @@ function HelpContent({ dark, onToggleDark }: { dark: boolean; onToggleDark: (dar
                 setQuery(value)
                 setCategory('all')
               }}
-              onSelect={(key: string) => openFaq(key)}
+              onSelect={onHeroSelect}
             >
               <Input
                 id="help-search"
@@ -541,6 +904,8 @@ function HelpContent({ dark, onToggleDark }: { dark: boolean; onToggleDark: (dar
       <Footer style={{ textAlign: 'center' }}>
         <Text type="secondary">Pet Health Club is operated by Inspiring Vet Care Limited.</Text>
       </Footer>
+
+      <SearchPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onSelect={onPaletteSelect} />
 
       <FloatButton.Group shape="circle">
         <FloatButton icon={<CustomerServiceOutlined />} tooltip="Contact us" href="#contact" type="primary" />
